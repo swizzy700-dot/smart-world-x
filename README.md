@@ -1,36 +1,134 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# SMART WORLD X
 
-## Getting Started
+Outreach intelligence platform. Operators manually submit websites; the platform processes them through analysis, outreach, and reply tracking.
 
-First, run the development server:
+## Website Intake Module
+
+Bulk URL submission with validation, deduplication, database storage, and processing job creation.
+
+### Prerequisites
+
+- Node.js 20+
+- Docker (for PostgreSQL and Redis)
+
+### Setup
 
 ```bash
+# Start infrastructure
+docker compose up -d
+
+# Install dependencies
+npm install
+
+# Configure environment
+cp .env.example .env
+
+# Run migrations
+npm run db:migrate
+
+# Start dev server
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open [http://localhost:3000/intake](http://localhost:3000/intake).
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+### API
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/api/intake/preview` | Validate input without persisting |
+| `POST` | `/api/intake` | Execute ingest (store + queue jobs) |
+| `GET` | `/api/intake/batches` | List recent intake batches |
 
-## Learn More
+### Website statuses
 
-To learn more about Next.js, take a look at the following resources:
+`NEW` → `QUEUED` (when auto-queue enabled) → `PROCESSING` → `COMPLETED` / `FAILED`
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+### Environment
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DATABASE_URL` | — | PostgreSQL connection string |
+| `REDIS_URL` | — | Optional; enables BullMQ job queue |
+| `INTAKE_MAX_BATCH_SIZE` | `10000` | Max URLs per batch |
+| `INTAKE_DB_CHUNK_SIZE` | `500` | Insert chunk size |
 
-## Deploy on Vercel
+Without `REDIS_URL`, websites and jobs are still created in the database with `QUEUED` status; run `npm run worker` to process via the DB poller.
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## Processing Queue
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Concurrent job processing with BullMQ (Redis) or PostgreSQL polling fallback.
+
+```bash
+# Terminal 1
+npm run dev
+
+# Terminal 2
+npm run worker
+```
+
+Open [http://localhost:3000/queue](http://localhost:3000/queue).
+
+See [docs/architecture/queue.md](docs/architecture/queue.md) for architecture details.
+
+## Website Analysis Engine
+
+Lighthouse-powered audits (Performance, Accessibility, SEO, Best Practices) with business-friendly findings.
+
+- Runs automatically in the **worker** after intake
+- Requires **Google Chrome** on the worker machine
+- Reports at [http://localhost:3000/analysis](http://localhost:3000/analysis)
+
+See [docs/architecture/analysis.md](docs/architecture/analysis.md).
+
+## Contact Extraction Engine
+
+Extracts public emails and phones from mailto links, header, footer, and contact pages.
+
+- Runs in the **worker** after Lighthouse analysis
+- Reports at `/contacts/[websiteId]`
+
+See [docs/architecture/contacts.md](docs/architecture/contacts.md).
+
+## Outreach Engine
+
+Generates subject line and message from website, contacts, and analysis report.
+
+- Default: **template** provider (no API key)
+- Optional: **OpenAI** (`OUTREACH_PROVIDER=openai`)
+- Pluggable provider interface for future AI backends
+- UI: `/outreach/[websiteId]`
+
+See [docs/architecture/outreach.md](docs/architecture/outreach.md).
+
+## Email Delivery
+
+SMTP outbound email with queue, retries, and activity logging.
+
+```bash
+npm run email-worker
+```
+
+Configure `SMTP_*` in `.env`. Queue send from outreach page or `POST /api/delivery/send`.
+
+See [docs/architecture/delivery.md](docs/architecture/delivery.md).
+
+### Queue API
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/queue/stats` | Queue and worker metrics |
+| `GET` | `/api/queue/jobs` | List jobs (filter by status, domain) |
+| `POST` | `/api/queue/jobs/:id/retry` | Retry failed/pending job |
+| `POST` | `/api/queue/jobs/:id/cancel` | Cancel job |
+| `POST` | `/api/queue/reconcile` | Enqueue pending DB jobs to Redis |
+| `POST` | `/api/queue/websites/:id/queue` | Re-queue a website |
+
+### Queue environment
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `QUEUE_WORKER_CONCURRENCY` | `5` | Parallel jobs per worker |
+| `QUEUE_MAX_ATTEMPTS` | `3` | Max attempts per job |
+| `QUEUE_LOCK_TTL_MS` | `300000` | Stale lock recovery (DB mode) |
+| `QUEUE_POLL_INTERVAL_MS` | `2000` | DB poller interval |
