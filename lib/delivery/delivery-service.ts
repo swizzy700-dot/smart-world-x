@@ -3,11 +3,22 @@ import { prisma } from "@/lib/db";
 import { isQueueEnabled } from "@/lib/queue/connection";
 import { logEmailActivity } from "./activity";
 import { SMTP_FROM } from "./constants";
-import { enqueueEmailDelivery } from "./email-queue";
-import { getEmailQueueCounts } from "./email-queue";
+import { enqueueEmailDelivery, getEmailQueue } from "./email-queue";
+import { fetchSimpleQueueCounts } from "@/lib/queue/queue-counts";
+import {
+  canUseRedisRead,
+  clearRedisReadDegraded,
+  markRedisReadDegraded,
+} from "@/lib/system/redis-read-guard";
+import {
+  dbDerivedEmailCounts,
+  getLastEmailCounts,
+  rememberEmailCounts,
+} from "@/lib/system/redis-snapshot";
 import { executeEmailSend } from "./send-email";
 import { isSmtpConfigured } from "./smtp-client";
 import { createAllFollowUpSchedules } from "@/lib/followup";
+import { assertSystemRunning } from "@/lib/system/system-guard";
 import type {
   DeliveryStats,
   EmailMessageRecord,
@@ -150,6 +161,8 @@ export async function queueOutboundEmail(
 export async function retryEmailDelivery(
   emailMessageId: string,
 ): Promise<EmailMessageRecord> {
+  await assertSystemRunning();
+
   const msg = await prisma.emailMessage.findUnique({
     where: { id: emailMessageId },
     include: {
@@ -269,13 +282,10 @@ export async function listEmailMessages(params: {
 }
 
 export async function getDeliveryStats(): Promise<DeliveryStats> {
-  const [groups, queueCounts] = await Promise.all([
-    prisma.emailMessage.groupBy({
-      by: ["status"],
-      _count: { _all: true },
-    }),
-    getEmailQueueCounts(),
-  ]);
+  const groups = await prisma.emailMessage.groupBy({
+    by: ["status"],
+    _count: { _all: true },
+  });
 
   const counts = {
     pending: 0,
@@ -289,6 +299,30 @@ export async function getDeliveryStats(): Promise<DeliveryStats> {
     if (g.status === EmailDeliveryStatus.SENDING) counts.sending = g._count._all;
     if (g.status === EmailDeliveryStatus.SENT) counts.sent = g._count._all;
     if (g.status === EmailDeliveryStatus.FAILED) counts.failed = g._count._all;
+  }
+
+  let queueCounts = dbDerivedEmailCounts(counts.pending, counts.sending);
+
+  if (isQueueEnabled() && (await canUseRedisRead())) {
+    try {
+      const queue = getEmailQueue();
+      queueCounts = await fetchSimpleQueueCounts(queue, "email-queue-counts");
+      rememberEmailCounts(queueCounts);
+      clearRedisReadDegraded();
+    } catch (error) {
+      markRedisReadDegraded(error);
+      const snapshot = getLastEmailCounts();
+      queueCounts =
+        snapshot.waiting > 0 || snapshot.active > 0
+          ? snapshot
+          : dbDerivedEmailCounts(counts.pending, counts.sending);
+    }
+  } else if (isQueueEnabled()) {
+    const snapshot = getLastEmailCounts();
+    queueCounts =
+      snapshot.waiting > 0 || snapshot.active > 0
+        ? snapshot
+        : dbDerivedEmailCounts(counts.pending, counts.sending);
   }
 
   return {

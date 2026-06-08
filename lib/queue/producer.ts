@@ -3,7 +3,14 @@ import {
   PIPELINE_QUEUE_NAME,
   PROCESS_JOB_NAME,
 } from "./constants";
-import { getConnectionOptions, isQueueEnabled } from "./connection";
+import { canEnqueueToRedis } from "@/lib/system/system-guard";
+import {
+  dbDerivedPipelineCounts,
+  getLastPipelineCounts,
+  rememberPipelineCounts,
+} from "@/lib/system/redis-snapshot";
+import { getQueueConnectionOptions, isQueueEnabled } from "./connection";
+import { fetchPipelineQueueCounts } from "./queue-counts";
 import type { PipelineJobPayload } from "./types";
 
 let pipelineQueue: Queue<PipelineJobPayload> | null = null;
@@ -11,7 +18,7 @@ let pipelineQueue: Queue<PipelineJobPayload> | null = null;
 export function getPipelineQueue(): Queue<PipelineJobPayload> {
   if (!pipelineQueue) {
     pipelineQueue = new Queue<PipelineJobPayload>(PIPELINE_QUEUE_NAME, {
-      connection: getConnectionOptions(),
+      connection: getQueueConnectionOptions(),
       defaultJobOptions: {
         attempts: 3,
         backoff: { type: "exponential", delay: 5000 },
@@ -28,6 +35,7 @@ export async function enqueuePipelineJob(
   options?: { priority?: number; delayMs?: number },
 ): Promise<boolean> {
   if (!isQueueEnabled()) return false;
+  if (!(await canEnqueueToRedis())) return false;
 
   const queue = getPipelineQueue();
   await queue.add(PROCESS_JOB_NAME, payload, {
@@ -46,6 +54,7 @@ export async function enqueuePipelineJobs(
   options?: { priority?: number },
 ): Promise<number> {
   if (!isQueueEnabled() || jobs.length === 0) return 0;
+  if (!(await canEnqueueToRedis())) return 0;
 
   const queue = getPipelineQueue();
   const chunkSize = 100;
@@ -81,16 +90,19 @@ export async function getRedisQueueCounts() {
     return { waiting: 0, active: 0, delayed: 0, failed: 0, paused: false };
   }
 
-  const queue = getPipelineQueue();
-  const [waiting, active, delayed, failed, paused] = await Promise.all([
-    queue.getWaitingCount(),
-    queue.getActiveCount(),
-    queue.getDelayedCount(),
-    queue.getFailedCount(),
-    queue.isPaused(),
-  ]);
-
-  return { waiting, active, delayed, failed, paused };
+  try {
+    const queue = getPipelineQueue();
+    const counts = await fetchPipelineQueueCounts(queue, "pipeline-queue-counts");
+    rememberPipelineCounts(counts);
+    return counts;
+  } catch (error) {
+    console.warn(
+      "[queue] Redis counts unavailable — using last-known snapshot:",
+      error instanceof Error ? error.message : error,
+    );
+    return getLastPipelineCounts();
+  }
 }
+
 
 export { isQueueEnabled, PIPELINE_QUEUE_NAME, PROCESS_JOB_NAME };

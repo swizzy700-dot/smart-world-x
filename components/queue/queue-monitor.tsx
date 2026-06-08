@@ -9,6 +9,8 @@ import {
   retryQueueJob,
 } from "@/lib/queue/client";
 import type { JobListItem, QueueStats } from "@/lib/queue/types";
+import type { SystemModeStatus } from "@/lib/system/types";
+import { SystemModeToggle } from "@/components/system/system-mode-toggle";
 import { JobTable } from "./job-table";
 import { QueueStatsPanel } from "./queue-stats";
 
@@ -20,7 +22,7 @@ const JOB_FILTERS = [
   { value: "COMPLETED", label: "COMPLETED" },
 ] as const;
 
-const POLL_MS = 5000;
+const POLL_MS = Number(process.env.NEXT_PUBLIC_QUEUE_DASHBOARD_POLL_MS ?? 15_000);
 
 export function QueueMonitor() {
   const [stats, setStats] = useState<QueueStats | null>(null);
@@ -33,6 +35,12 @@ export function QueueMonitor() {
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [live, setLive] = useState(true);
+  const [systemStatus, setSystemStatus] = useState<SystemModeStatus | null>(
+    null,
+  );
+
+  const readOnly =
+    systemStatus?.mode === "PAUSED" || systemStatus?.failSafe === true;
 
   const refresh = useCallback(async () => {
     try {
@@ -55,33 +63,21 @@ export function QueueMonitor() {
   }, [statusFilter, domainFilter, page]);
 
   useEffect(() => {
-    const refreshQueue = async () => {
-      setLoading(true);
-      try {
-        const data = await fetchQueueJobs({
-          status: statusFilter,
-          domain: domainFilter,
-          page,
-        });
-        setJobs(data.jobs);
-        setTotal(data.total);
-      } catch (err) {
-        setMessage(err instanceof Error ? err.message : "Failed to load queue");
-      } finally {
-        setLoading(false);
-      }
-    };
-    
-    refreshQueue();
-  }, [statusFilter, domainFilter, page]);
+    setLoading(true);
+    refresh().catch(() => {});
+  }, [refresh]);
 
   useEffect(() => {
     if (!live) return;
-    const id = setInterval(refresh, POLL_MS);
+    if (systemStatus?.mode !== "RUNNING") return;
+    const id = setInterval(() => {
+      refresh().catch(() => {});
+    }, POLL_MS);
     return () => clearInterval(id);
-  }, [live, refresh]);
+  }, [live, refresh, systemStatus?.mode]);
 
   const handleRetry = async (jobId: string) => {
+    if (readOnly) return;
     setActionLoading(jobId);
     setMessage(null);
     try {
@@ -98,6 +94,7 @@ export function QueueMonitor() {
   };
 
   const handleCancel = async (jobId: string) => {
+    if (readOnly) return;
     if (!confirm("Cancel this job?")) return;
     setActionLoading(jobId);
     setMessage(null);
@@ -113,6 +110,7 @@ export function QueueMonitor() {
   };
 
   const handleReconcile = async () => {
+    if (readOnly) return;
     setMessage(null);
     try {
       const result = await reconcileQueue();
@@ -140,6 +138,7 @@ export function QueueMonitor() {
           </h1>
         </div>
         <div className="flex flex-wrap items-center gap-2">
+          <SystemModeToggle onModeChange={setSystemStatus} />
           <label className="flex items-center gap-2 font-mono text-[10px] text-cyan-500">
             <input
               type="checkbox"
@@ -159,12 +158,20 @@ export function QueueMonitor() {
           <button
             type="button"
             onClick={handleReconcile}
-            className="rounded border border-amber-800/60 px-3 py-1.5 font-mono text-[10px] text-amber-300 hover:bg-amber-950/30"
+            disabled={readOnly}
+            className="rounded border border-amber-800/60 px-3 py-1.5 font-mono text-[10px] text-amber-300 hover:bg-amber-950/30 disabled:opacity-40"
           >
             RECONCILE
           </button>
         </div>
       </header>
+
+      {readOnly && (
+        <p className="rounded border border-amber-700/40 bg-amber-950/20 px-3 py-2 font-mono text-xs text-amber-200">
+          System is paused — dashboard is read-only. Resume processing to retry,
+          cancel, or reconcile jobs.
+        </p>
+      )}
 
       {message && (
         <p className="rounded border border-cyan-900/40 bg-[#0d1219] px-3 py-2 font-mono text-xs text-cyan-300">
@@ -172,7 +179,11 @@ export function QueueMonitor() {
         </p>
       )}
 
-      <QueueStatsPanel stats={stats} loading={loading && !stats} />
+      <QueueStatsPanel
+        stats={stats}
+        loading={loading && !stats}
+        systemStatus={systemStatus ?? stats?.system ?? null}
+      />
 
       <div className="flex flex-wrap gap-2">
         {JOB_FILTERS.map((f) => (
@@ -209,6 +220,7 @@ export function QueueMonitor() {
         onRetry={handleRetry}
         onCancel={handleCancel}
         actionLoading={actionLoading}
+        readOnly={readOnly}
       />
 
       <div className="flex items-center justify-between font-mono text-[10px] text-cyan-600">

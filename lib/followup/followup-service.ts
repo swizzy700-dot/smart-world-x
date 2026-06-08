@@ -32,7 +32,7 @@ const FOLLOW_UP_SCHEDULE = [
 
 export async function createFollowUpSchedule(
   input: FollowUpScheduleInput,
-): Promise<FollowUpScheduleRecord> {
+): Promise<FollowUpScheduleRecord | null> {
   const website = await prisma.website.findUnique({
     where: { id: input.websiteId },
   });
@@ -53,11 +53,9 @@ export async function createFollowUpSchedule(
     throw new FollowUpError("Email does not belong to this website", "INVALID_EMAIL");
   }
 
+  // Skip follow-up scheduling silently if email is not confirmed as SENT
   if (initialEmail.status !== EmailDeliveryStatus.SENT) {
-    throw new FollowUpError(
-      "Initial email must be sent before scheduling follow-ups",
-      "EMAIL_NOT_SENT",
-    );
+    return null;
   }
 
   const existing = await prisma.followUpSchedule.findUnique({
@@ -107,7 +105,9 @@ export async function createAllFollowUpSchedules(
         scheduledDays: config.days,
         sequence: config.sequence,
       });
-      schedules.push(schedule);
+      if (schedule) {
+        schedules.push(schedule);
+      }
     } catch (error) {
       if (error instanceof FollowUpError && error.code === "ALREADY_EXISTS") {
         continue;

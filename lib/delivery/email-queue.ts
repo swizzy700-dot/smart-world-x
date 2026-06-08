@@ -1,5 +1,11 @@
 import { Queue } from "bullmq";
-import { getConnectionOptions, isQueueEnabled } from "@/lib/queue/connection";
+import { getQueueConnectionOptions, isQueueEnabled } from "@/lib/queue/connection";
+import { fetchSimpleQueueCounts } from "@/lib/queue/queue-counts";
+import { canEnqueueToRedis } from "@/lib/system/system-guard";
+import {
+  getLastEmailCounts,
+  rememberEmailCounts,
+} from "@/lib/system/redis-snapshot";
 import {
   EMAIL_JOB_NAME,
   EMAIL_MAX_ATTEMPTS,
@@ -13,7 +19,7 @@ let emailQueue: Queue<EmailQueuePayload> | null = null;
 export function getEmailQueue(): Queue<EmailQueuePayload> {
   if (!emailQueue) {
     emailQueue = new Queue<EmailQueuePayload>(EMAIL_QUEUE_NAME, {
-      connection: getConnectionOptions(),
+      connection: getQueueConnectionOptions(),
       defaultJobOptions: {
         attempts: EMAIL_MAX_ATTEMPTS,
         backoff: { type: "exponential", delay: EMAIL_RETRY_DELAY_MS },
@@ -30,6 +36,7 @@ export async function enqueueEmailDelivery(
   options?: { delayMs?: number },
 ): Promise<boolean> {
   if (!isQueueEnabled()) return false;
+  if (!(await canEnqueueToRedis())) return false;
 
   const queue = getEmailQueue();
   await queue.add(EMAIL_JOB_NAME, payload, {
@@ -52,14 +59,18 @@ export async function getEmailQueueCounts() {
     return { waiting: 0, active: 0, delayed: 0 };
   }
 
-  const queue = getEmailQueue();
-  const [waiting, active, delayed] = await Promise.all([
-    queue.getWaitingCount(),
-    queue.getActiveCount(),
-    queue.getDelayedCount(),
-  ]);
-
-  return { waiting, active, delayed };
+  try {
+    const queue = getEmailQueue();
+    const counts = await fetchSimpleQueueCounts(queue, "email-queue-counts");
+    rememberEmailCounts(counts);
+    return counts;
+  } catch (error) {
+    console.warn(
+      "[email-queue] Redis counts unavailable — using last-known snapshot:",
+      error instanceof Error ? error.message : error,
+    );
+    return getLastEmailCounts();
+  }
 }
 
 export { EMAIL_QUEUE_NAME, EMAIL_JOB_NAME };

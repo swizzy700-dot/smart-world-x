@@ -1,14 +1,9 @@
-import { WebsiteStatus, ProcessingJobStatus } from "@prisma/client";
+cimport { WebsiteStatus, ProcessingJobStatus } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { QUEUE_MAX_ATTEMPTS } from "@/lib/queue/constants";
 import { enqueuePipelineJobs, isQueueEnabled } from "@/lib/queue/producer";
-import { assertSystemRunning } from "@/lib/system/system-guard";
 import type { PipelineJobPayload } from "@/lib/queue/types";
-import {
-  INTAKE_DB_CHUNK_SIZE,
-  INTAKE_MAX_BATCH_SIZE,
-  INTAKE_TRANSACTION_TIMEOUT_MS,
-} from "./constants";
+import { INTAKE_DB_CHUNK_SIZE, INTAKE_MAX_BATCH_SIZE } from "./constants";
 import { dedupeWithinBatch, findExistingNormalizedUrls } from "./dedupe";
 import { parseUrlLines } from "./parse-urls";
 import type {
@@ -144,11 +139,6 @@ export async function executeIntake(
   input: string,
   options: IntakeExecuteOptions = {},
 ): Promise<IntakeExecuteResult> {
-  const autoQueue = options.autoQueue !== false;
-  if (autoQueue) {
-    await assertSystemRunning();
-  }
-
   const { validated, invalid, stats } = processIntakeInput(input);
 
   const existing = await findExistingNormalizedUrls(
@@ -179,12 +169,12 @@ export async function executeIntake(
   const websiteIds: string[] = [];
   const jobIds: string[] = [];
   const queuePayloads: PipelineJobPayload[] = [];
+  const autoQueue = options.autoQueue !== false;
 
   for (let i = 0; i < toInsert.length; i += INTAKE_DB_CHUNK_SIZE) {
     const chunk = toInsert.slice(i, i + INTAKE_DB_CHUNK_SIZE);
 
-    await prisma.$transaction(
-      async (tx) => {
+    await prisma.$transaction(async (tx) => {
       for (const item of chunk) {
         const website = await tx.website.create({
           data: {
@@ -227,9 +217,7 @@ export async function executeIntake(
           });
         }
       }
-    },
-    { timeout: INTAKE_TRANSACTION_TIMEOUT_MS },
-    );
+    });
   }
 
   if (autoQueue && queuePayloads.length > 0) {

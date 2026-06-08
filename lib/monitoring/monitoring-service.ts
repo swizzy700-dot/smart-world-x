@@ -2,8 +2,25 @@ import { prisma } from "@/lib/db";
 import { isQueueEnabled, getRedisUrl } from "@/lib/queue/connection";
 import { isSmtpConfigured } from "@/lib/delivery/smtp-client";
 import { SMTP_HOST, SMTP_PORT } from "@/lib/delivery/constants";
-import { getRedisQueueCounts } from "@/lib/queue/producer";
-import { getEmailQueueCounts } from "@/lib/delivery/email-queue";
+import { getEmailQueue } from "@/lib/delivery/email-queue";
+import {
+  fetchPipelineQueueCounts,
+  fetchSimpleQueueCounts,
+} from "@/lib/queue/queue-counts";
+import { getPipelineQueue } from "@/lib/queue/producer";
+import {
+  canUseRedisRead,
+  clearRedisReadDegraded,
+  markRedisReadDegraded,
+} from "@/lib/system/redis-read-guard";
+import {
+  dbDerivedEmailCounts,
+  dbDerivedPipelineCounts,
+  getLastEmailCounts,
+  getLastPipelineCounts,
+  rememberEmailCounts,
+  rememberPipelineCounts,
+} from "@/lib/system/redis-snapshot";
 import type {
   DatabaseStatus,
   FailedJobsSummary,
@@ -91,14 +108,35 @@ async function checkQueueHealth(): Promise<boolean> {
  * Get website queue health
  */
 export async function getWebsiteQueueHealth(): Promise<QueueHealth> {
-  const counts = isQueueEnabled()
-    ? await getRedisQueueCounts()
-    : { waiting: 0, active: 0, delayed: 0, failed: 0, paused: false };
+  const [failedCount, pendingCount, activeCount] = await Promise.all([
+    prisma.processingJob.count({ where: { status: "FAILED" } }),
+    prisma.processingJob.count({ where: { status: "PENDING" } }),
+    prisma.processingJob.count({ where: { status: "ACTIVE" } }),
+  ]);
 
-  // Get failed jobs count from database
-  const failedCount = await prisma.processingJob.count({
-    where: { status: "FAILED" },
-  });
+  let counts = dbDerivedPipelineCounts(pendingCount, activeCount);
+
+  if (isQueueEnabled() && (await canUseRedisRead())) {
+    try {
+      const queue = getPipelineQueue();
+      counts = await fetchPipelineQueueCounts(queue, "pipeline-queue-counts");
+      rememberPipelineCounts(counts);
+      clearRedisReadDegraded();
+    } catch (error) {
+      markRedisReadDegraded(error);
+      const snapshot = getLastPipelineCounts();
+      counts =
+        snapshot.waiting > 0 || snapshot.active > 0
+          ? snapshot
+          : dbDerivedPipelineCounts(pendingCount, activeCount);
+    }
+  } else if (isQueueEnabled()) {
+    const snapshot = getLastPipelineCounts();
+    counts =
+      snapshot.waiting > 0 || snapshot.active > 0
+        ? snapshot
+        : dbDerivedPipelineCounts(pendingCount, activeCount);
+  }
 
   // Calculate processing speed (jobs completed in last 5 minutes)
   const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
@@ -133,14 +171,35 @@ export async function getWebsiteQueueHealth(): Promise<QueueHealth> {
  * Get email queue health
  */
 export async function getEmailQueueHealth(): Promise<QueueHealth> {
-  const counts = isQueueEnabled()
-    ? await getEmailQueueCounts()
-    : { waiting: 0, active: 0, delayed: 0 };
+  const [failedCount, pendingCount, sendingCount] = await Promise.all([
+    prisma.emailMessage.count({ where: { status: "FAILED" } }),
+    prisma.emailMessage.count({ where: { status: "PENDING" } }),
+    prisma.emailMessage.count({ where: { status: "SENDING" } }),
+  ]);
 
-  // Get failed emails count
-  const failedCount = await prisma.emailMessage.count({
-    where: { status: "FAILED" },
-  });
+  let counts = dbDerivedEmailCounts(pendingCount, sendingCount);
+
+  if (isQueueEnabled() && (await canUseRedisRead())) {
+    try {
+      const queue = getEmailQueue();
+      counts = await fetchSimpleQueueCounts(queue, "email-queue-counts");
+      rememberEmailCounts(counts);
+      clearRedisReadDegraded();
+    } catch (error) {
+      markRedisReadDegraded(error);
+      const snapshot = getLastEmailCounts();
+      counts =
+        snapshot.waiting > 0 || snapshot.active > 0
+          ? snapshot
+          : dbDerivedEmailCounts(pendingCount, sendingCount);
+    }
+  } else if (isQueueEnabled()) {
+    const snapshot = getLastEmailCounts();
+    counts =
+      snapshot.waiting > 0 || snapshot.active > 0
+        ? snapshot
+        : dbDerivedEmailCounts(pendingCount, sendingCount);
+  }
 
   // Calculate processing speed (emails sent in last 5 minutes)
   const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);

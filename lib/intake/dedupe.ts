@@ -33,7 +33,7 @@ export async function findExistingNormalizedUrls(
   lookup: (urls: string[]) => Promise<Set<string>>,
 ): Promise<Set<string>> {
   const existing = new Set<string>();
-  const chunkSize = 1000;
+  const chunkSize = 100;
 
   for (let i = 0; i < normalizedUrls.length; i += chunkSize) {
     const chunk = normalizedUrls.slice(i, i + chunkSize);

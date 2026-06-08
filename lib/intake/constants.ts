@@ -3,7 +3,11 @@ export const INTAKE_MAX_BATCH_SIZE = Number(
 );
 
 export const INTAKE_DB_CHUNK_SIZE = Number(
-  process.env.INTAKE_DB_CHUNK_SIZE ?? 500,
+  process.env.INTAKE_DB_CHUNK_SIZE ?? 50,
+);
+
+export const INTAKE_TRANSACTION_TIMEOUT_MS = Number(
+  process.env.INTAKE_TRANSACTION_TIMEOUT_MS ?? 30_000,
 );
 
 export const MAX_URL_LENGTH = 2048;

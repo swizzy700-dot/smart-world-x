@@ -1,11 +1,13 @@
 import { handleApiError, jsonOk } from "@/lib/api/response";
 import { DeliveryError, queueOutboundEmail } from "@/lib/delivery/delivery-service";
+import { assertSystemRunning } from "@/lib/system/system-guard";
 import { queueEmailSchema } from "@/lib/delivery/schemas";
 
 export const runtime = "nodejs";
 
 export async function POST(request: Request) {
   try {
+    await assertSystemRunning();
     const body = await request.json();
     const input = queueEmailSchema.parse(body);
     const result = await queueOutboundEmail(input);

@@ -1,13 +1,19 @@
 "use client";
 
 import type { QueueStats } from "@/lib/queue/types";
+import type { SystemModeStatus } from "@/lib/system/types";
 
 interface QueueStatsPanelProps {
   stats: QueueStats | null;
   loading?: boolean;
+  systemStatus?: SystemModeStatus | null;
 }
 
-export function QueueStatsPanel({ stats, loading }: QueueStatsPanelProps) {
+export function QueueStatsPanel({
+  stats,
+  loading,
+  systemStatus,
+}: QueueStatsPanelProps) {
   if (loading || !stats) {
     return (
       <div className="grid grid-cols-2 gap-2 lg:grid-cols-6">
@@ -64,10 +70,17 @@ export function QueueStatsPanel({ stats, loading }: QueueStatsPanelProps) {
         ))}
       </div>
       <p className="font-mono text-[10px] text-cyan-700">
-        MODE: {stats.queue.mode.toUpperCase()} · WORKERS:{" "}
-        {stats.workers.concurrency} · ACTIVE LOCKS: {stats.workers.activeLocks}
-        · REDIS ACTIVE: {stats.queue.active} · PAUSED:{" "}
-        {stats.queue.paused ? "YES" : "NO"}
+        SYSTEM: {(systemStatus?.mode ?? stats.system.mode).toUpperCase()}
+        {systemStatus?.failSafe || stats.system.failSafe ? " · FAIL-SAFE" : ""}
+        {" · "}
+        MODE: {stats.queue.mode.toUpperCase()}
+        {stats.queue.statsSource
+          ? ` · STATS: ${stats.queue.statsSource.toUpperCase()}`
+          : ""}
+        {" · "}
+        WORKERS: {stats.workers.concurrency} · ACTIVE LOCKS:{" "}
+        {stats.workers.activeLocks} · REDIS ACTIVE: {stats.queue.active} ·
+        QUEUE PAUSED: {stats.queue.paused ? "YES" : "NO"}
       </p>
     </div>
   );

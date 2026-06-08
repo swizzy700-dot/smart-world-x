@@ -1,5 +1,7 @@
 import { Queue } from "bullmq";
-import { getConnectionOptions, isQueueEnabled } from "@/lib/queue/connection";
+import { getQueueConnectionOptions, isQueueEnabled } from "@/lib/queue/connection";
+import { fetchSimpleQueueCounts } from "@/lib/queue/queue-counts";
+import { canEnqueueToRedis } from "@/lib/system/system-guard";
 import {
   FOLLOW_UP_JOB_NAME,
   FOLLOW_UP_MAX_ATTEMPTS,
@@ -13,7 +15,7 @@ let followUpQueue: Queue<FollowUpQueuePayload> | null = null;
 export function getFollowUpQueue(): Queue<FollowUpQueuePayload> {
   if (!followUpQueue) {
     followUpQueue = new Queue<FollowUpQueuePayload>(FOLLOW_UP_QUEUE_NAME, {
-      connection: getConnectionOptions(),
+      connection: getQueueConnectionOptions(),
       defaultJobOptions: {
         attempts: FOLLOW_UP_MAX_ATTEMPTS,
         backoff: { type: "exponential", delay: FOLLOW_UP_RETRY_DELAY_MS },
@@ -30,6 +32,7 @@ export async function enqueueFollowUpProcessing(
   options?: { delayMs?: number },
 ): Promise<boolean> {
   if (!isQueueEnabled()) return false;
+  if (!(await canEnqueueToRedis())) return false;
 
   const queue = getFollowUpQueue();
   await queue.add(FOLLOW_UP_JOB_NAME, payload, {
@@ -55,13 +58,7 @@ export async function getFollowUpQueueCounts() {
   }
 
   const queue = getFollowUpQueue();
-  const [waiting, active, delayed] = await Promise.all([
-    queue.getWaitingCount(),
-    queue.getActiveCount(),
-    queue.getDelayedCount(),
-  ]);
-
-  return { waiting, active, delayed };
+  return fetchSimpleQueueCounts(queue, "followup-queue-counts");
 }
 
 export { FOLLOW_UP_QUEUE_NAME, FOLLOW_UP_JOB_NAME };

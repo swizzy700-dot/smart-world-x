@@ -1,6 +1,7 @@
 import { EmailDeliveryStatus } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { EMAIL_POLL_INTERVAL_MS, EMAIL_WORKER_CONCURRENCY } from "./constants";
+import { isSystemPaused } from "@/lib/system/system-mode";
 import { executeEmailSend } from "./send-email";
 import { isSmtpConfigured } from "./smtp-client";
 
@@ -34,6 +35,8 @@ async function processOne(emailMessageId: string): Promise<void> {
 }
 
 async function pollOnce(): Promise<void> {
+  if (await isSystemPaused()) return;
+
   const ids = await claimPending();
   await Promise.all(ids.map(processOne));
 }

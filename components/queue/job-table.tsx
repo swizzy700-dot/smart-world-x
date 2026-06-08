@@ -18,6 +18,7 @@ interface JobTableProps {
   onRetry: (jobId: string) => void;
   onCancel: (jobId: string) => void;
   actionLoading: string | null;
+  readOnly?: boolean;
 }
 
 export function JobTable({
@@ -25,6 +26,7 @@ export function JobTable({
   onRetry,
   onCancel,
   actionLoading,
+  readOnly = false,
 }: JobTableProps) {
   if (jobs.length === 0) {
     return (
@@ -101,18 +103,20 @@ export function JobTable({
                   >
                     OUTREACH
                   </Link>
-                  {(job.jobStatus === "FAILED" ||
-                    job.jobStatus === "PENDING") && (
-                    <button
-                      type="button"
-                      disabled={actionLoading === job.id}
-                      onClick={() => onRetry(job.id)}
-                      className="rounded border border-cyan-800/60 px-2 py-0.5 text-[10px] text-cyan-300 hover:bg-cyan-950/50 disabled:opacity-40"
-                    >
-                      RETRY
-                    </button>
-                  )}
-                  {job.jobStatus !== "COMPLETED" &&
+                  {!readOnly &&
+                    (job.jobStatus === "FAILED" ||
+                      job.jobStatus === "PENDING") && (
+                      <button
+                        type="button"
+                        disabled={actionLoading === job.id}
+                        onClick={() => onRetry(job.id)}
+                        className="rounded border border-cyan-800/60 px-2 py-0.5 text-[10px] text-cyan-300 hover:bg-cyan-950/50 disabled:opacity-40"
+                      >
+                        RETRY
+                      </button>
+                    )}
+                  {!readOnly &&
+                    job.jobStatus !== "COMPLETED" &&
                     job.jobStatus !== "ACTIVE" && (
                       <button
                         type="button"

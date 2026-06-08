@@ -4,12 +4,25 @@ import {
   type Prisma,
 } from "@prisma/client";
 import { prisma } from "@/lib/db";
+import { assertSystemRunning } from "@/lib/system/system-guard";
+import {
+  canUseRedisRead,
+  clearRedisReadDegraded,
+  getSystemModeStatusForReads,
+  markRedisReadDegraded,
+} from "@/lib/system/redis-read-guard";
+import {
+  dbDerivedPipelineCounts,
+  getLastPipelineCounts,
+  rememberPipelineCounts,
+} from "@/lib/system/redis-snapshot";
 import {
   enqueuePipelineJob,
-  getRedisQueueCounts,
+  getPipelineQueue,
   isQueueEnabled,
   removeQueueJob,
 } from "./producer";
+import { fetchPipelineQueueCounts } from "./queue-counts";
 import { resetJobForRetry, markJobFailed } from "./status-sync";
 import type {
   JobListItem,
@@ -19,7 +32,7 @@ import type {
   ReconcileResult,
   RetryJobResult,
 } from "./types";
-import { QUEUE_WORKER_CONCURRENCY } from "./constants";
+import { QUEUE_LOCK_TTL_MS, QUEUE_WORKER_CONCURRENCY } from "./constants";
 
 export class QueueError extends Error {
   constructor(
@@ -45,24 +58,24 @@ function buildPayload(job: {
 }
 
 export async function getQueueStats(): Promise<QueueStats> {
-  const [websiteGroups, jobGroups, activeLocks, redisCounts] =
-    await Promise.all([
-      prisma.website.groupBy({
-        by: ["status"],
-        _count: { _all: true },
-      }),
-      prisma.processingJob.groupBy({
-        by: ["status"],
-        _count: { _all: true },
-      }),
-      prisma.processingJob.count({
-        where: {
-          status: ProcessingJobStatus.ACTIVE,
-          lockedAt: { not: null },
-        },
-      }),
-      getRedisQueueCounts(),
-    ]);
+  const [websiteGroups, jobGroups, activeLocks] = await Promise.all([
+    prisma.website.groupBy({
+      by: ["status"],
+      _count: { _all: true },
+    }),
+    prisma.processingJob.groupBy({
+      by: ["status"],
+      _count: { _all: true },
+    }),
+    prisma.processingJob.count({
+      where: {
+        status: ProcessingJobStatus.ACTIVE,
+        lockedAt: { not: null },
+      },
+    }),
+  ]);
+
+  const systemStatus = getSystemModeStatusForReads();
 
   const websites = emptyWebsiteCounts();
   for (const row of websiteGroups) {
@@ -74,17 +87,51 @@ export async function getQueueStats(): Promise<QueueStats> {
     jobs[row.status] = row._count._all;
   }
 
+  let redisCounts = getLastPipelineCounts();
+  let statsSource: "redis" | "snapshot" | "database" = "snapshot";
+
+  if (!isQueueEnabled()) {
+    redisCounts = dbDerivedPipelineCounts(jobs.PENDING, jobs.ACTIVE);
+    statsSource = "database";
+  } else if (await canUseRedisRead()) {
+    try {
+      const queue = getPipelineQueue();
+      redisCounts = await fetchPipelineQueueCounts(
+        queue,
+        "pipeline-queue-counts",
+      );
+      rememberPipelineCounts(redisCounts);
+      clearRedisReadDegraded();
+      statsSource = "redis";
+    } catch (error) {
+      markRedisReadDegraded(error);
+      redisCounts =
+        getLastPipelineCounts().waiting > 0 || getLastPipelineCounts().active > 0
+          ? getLastPipelineCounts()
+          : dbDerivedPipelineCounts(jobs.PENDING, jobs.ACTIVE);
+      statsSource = "snapshot";
+    }
+  } else {
+    redisCounts =
+      getLastPipelineCounts().waiting > 0 || getLastPipelineCounts().active > 0
+        ? getLastPipelineCounts()
+        : dbDerivedPipelineCounts(jobs.PENDING, jobs.ACTIVE);
+    statsSource = systemStatus.failSafe ? "database" : "snapshot";
+  }
+
   return {
     websites,
     jobs,
     queue: {
       ...redisCounts,
       mode: isQueueEnabled() ? "redis" : "database",
+      statsSource,
     },
     workers: {
       concurrency: QUEUE_WORKER_CONCURRENCY,
       activeLocks,
     },
+    system: systemStatus,
   };
 }
 
@@ -122,7 +169,7 @@ export async function listJobs(params: {
       where,
       skip,
       take: pageSize,
-      orderBy: [{ priority: "desc" }, { createdAt: "asc" }],
+      orderBy: [{ priority: "desc" }, { createdAt: "desc" }],
       include: {
         website: {
           select: {
@@ -162,6 +209,8 @@ export async function listJobs(params: {
 }
 
 export async function retryJob(jobId: string): Promise<RetryJobResult> {
+  await assertSystemRunning();
+
   const job = await prisma.processingJob.findUnique({
     where: { id: jobId },
     include: {
@@ -209,6 +258,8 @@ export async function cancelJob(
   jobId: string,
   reason = "Cancelled by operator",
 ): Promise<void> {
+  await assertSystemRunning();
+
   const job = await prisma.processingJob.findUnique({
     where: { id: jobId },
   });
@@ -226,6 +277,8 @@ export async function cancelJob(
 }
 
 export async function queueWebsite(websiteId: string): Promise<RetryJobResult> {
+  await assertSystemRunning();
+
   const website = await prisma.website.findUnique({
     where: { id: websiteId },
     include: {
@@ -280,6 +333,47 @@ export async function queueWebsite(websiteId: string): Promise<RetryJobResult> {
 }
 
 export async function reconcilePendingJobs(): Promise<ReconcileResult> {
+  await assertSystemRunning();
+
+  // First, recover orphaned ACTIVE jobs stuck in PROCESSING state
+  const staleActiveCutoff = new Date(Date.now() - QUEUE_LOCK_TTL_MS);
+  const orphanedActive = await prisma.processingJob.findMany({
+    where: {
+      status: ProcessingJobStatus.ACTIVE,
+      lockedAt: { lt: staleActiveCutoff },
+      website: {
+        status: WebsiteStatus.PROCESSING,
+      },
+    },
+    select: { id: true, websiteId: true },
+    take: 100,
+  });
+
+  if (orphanedActive.length > 0) {
+    const orphanedIds = orphanedActive.map((j) => j.id);
+    await prisma.processingJob.updateMany({
+      where: {
+        id: { in: orphanedIds },
+        status: ProcessingJobStatus.ACTIVE,
+      },
+      data: {
+        status: ProcessingJobStatus.PENDING,
+        lockedAt: null,
+        lockToken: null,
+        currentStage: "orphaned_recovered",
+      },
+    });
+
+    await prisma.website.updateMany({
+      where: {
+        id: { in: orphanedActive.map((j) => j.websiteId) },
+        status: WebsiteStatus.PROCESSING,
+      },
+      data: { status: WebsiteStatus.QUEUED },
+    });
+  }
+
+  // Then process PENDING jobs as normal
   const pending = await prisma.processingJob.findMany({
     where: {
       status: ProcessingJobStatus.PENDING,

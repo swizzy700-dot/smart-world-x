@@ -22,6 +22,9 @@ export default function QueuePage() {
               INTAKE
             </Link>
             <span className="text-cyan-500">QUEUE</span>
+            <Link href="/monitoring" className="hover:text-cyan-400">
+              MONITORING
+            </Link>
           </div>
         </div>
       </nav>

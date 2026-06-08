@@ -4,11 +4,17 @@ import { prisma } from "@/lib/db";
 import {
   PIPELINE_QUEUE_NAME,
   PROCESS_JOB_NAME,
-  QUEUE_RATE_LIMIT_DURATION_MS,
-  QUEUE_RATE_LIMIT_MAX,
   QUEUE_WORKER_CONCURRENCY,
 } from "./constants";
-import { getConnectionOptions } from "./connection";
+import { deferJobIfPaused } from "@/lib/system/system-guard";
+import {
+  registerWorkerForModeSync,
+  startWorkerModeSync,
+  stopWorkerModeSync,
+  syncWorkersToSystemMode,
+  unregisterWorkerForModeSync,
+} from "@/lib/system/worker-mode-sync";
+import { getPipelineWorkerOptions } from "./bullmq-settings";
 import { processPipelineJob } from "./processor";
 import { markJobFailed } from "./status-sync";
 import type { PipelineJobPayload } from "./types";
@@ -16,6 +22,10 @@ import type { PipelineJobPayload } from "./types";
 let worker: Worker<PipelineJobPayload> | null = null;
 
 async function handleJob(job: Job<PipelineJobPayload>) {
+  if (await deferJobIfPaused(job)) {
+    return;
+  }
+
   const payload = job.data;
   const maxAttempts = job.opts.attempts ?? 3;
   const attemptNumber = job.attemptsMade + 1;
@@ -58,14 +68,11 @@ async function handleJob(job: Job<PipelineJobPayload>) {
 export function startRedisWorker(): Worker<PipelineJobPayload> {
   if (worker) return worker;
 
-  worker = new Worker<PipelineJobPayload>(PIPELINE_QUEUE_NAME, handleJob, {
-    connection: getConnectionOptions(),
-    concurrency: QUEUE_WORKER_CONCURRENCY,
-    limiter: {
-      max: QUEUE_RATE_LIMIT_MAX,
-      duration: QUEUE_RATE_LIMIT_DURATION_MS,
-    },
-  });
+  worker = new Worker<PipelineJobPayload>(
+    PIPELINE_QUEUE_NAME,
+    handleJob,
+    getPipelineWorkerOptions(QUEUE_WORKER_CONCURRENCY),
+  );
 
   worker.on("failed", (job, err) => {
     console.error(
@@ -78,6 +85,12 @@ export function startRedisWorker(): Worker<PipelineJobPayload> {
     console.log(`[worker] Job ${job.id} completed`);
   });
 
+  registerWorkerForModeSync(worker);
+  startWorkerModeSync();
+  syncWorkersToSystemMode().catch((err) => {
+    console.warn("[worker] system mode sync failed:", err);
+  });
+
   console.log(
     `[worker] Redis worker started (concurrency=${QUEUE_WORKER_CONCURRENCY})`,
   );
@@ -87,6 +100,7 @@ export function startRedisWorker(): Worker<PipelineJobPayload> {
 
 export async function stopRedisWorker(): Promise<void> {
   if (worker) {
+    unregisterWorkerForModeSync(worker);
     await worker.close();
     worker = null;
   }
@@ -95,7 +109,9 @@ export async function stopRedisWorker(): Promise<void> {
 export { PROCESS_JOB_NAME };
 
 // Auto-start when run directly
-startRedisWorker();
+if (require.main === module) {
+  startRedisWorker();
+}
 
 process.on("SIGINT", async () => {
   console.log("[worker] Shutting down...");
@@ -107,4 +123,13 @@ process.on("SIGTERM", async () => {
   console.log("[worker] Shutting down...");
   await stopRedisWorker();
   process.exit(0);
+});
+
+process.on("unhandledRejection", (reason, promise) => {
+  console.error("[worker] Unhandled rejection:", reason, "at:", promise);
+});
+
+process.on("uncaughtException", (error) => {
+  console.error("[worker] Uncaught exception:", error);
+  process.exit(1);
 });

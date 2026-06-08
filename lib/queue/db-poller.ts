@@ -6,6 +6,7 @@ import {
   QUEUE_POLL_INTERVAL_MS,
   QUEUE_WORKER_CONCURRENCY,
 } from "./constants";
+import { isSystemPaused } from "@/lib/system/system-mode";
 import { processPipelineJob } from "./processor";
 import { markJobFailed } from "./status-sync";
 import type { PipelineJobPayload } from "./types";
@@ -17,7 +18,9 @@ const workerId = `db-worker-${randomUUID().slice(0, 8)}`;
 
 async function releaseStaleLocks(): Promise<number> {
   const cutoff = new Date(Date.now() - QUEUE_LOCK_TTL_MS);
-  const result = await prisma.processingJob.updateMany({
+  
+  // Release stale locks from ACTIVE jobs and reset to PENDING
+  const activeResult = await prisma.processingJob.updateMany({
     where: {
       status: ProcessingJobStatus.ACTIVE,
       lockedAt: { lt: cutoff },
@@ -30,14 +33,44 @@ async function releaseStaleLocks(): Promise<number> {
     },
   });
 
-  if (result.count > 0) {
+  // Reset orphaned websites stuck in PROCESSING state
+  if (activeResult.count > 0) {
     await prisma.website.updateMany({
       where: { status: WebsiteStatus.PROCESSING },
       data: { status: WebsiteStatus.QUEUED },
     });
   }
 
-  return result.count;
+  // Additional recovery: Find jobs that are ACTIVE but website is stuck in QUEUED/NEW
+  // This handles cases where worker crashed after markJobActive but website wasn't updated
+  const orphanedJobs = await prisma.processingJob.findMany({
+    where: {
+      status: ProcessingJobStatus.ACTIVE,
+      website: {
+        status: { in: [WebsiteStatus.QUEUED, WebsiteStatus.NEW] },
+      },
+    },
+    select: { id: true },
+    take: 100,
+  });
+
+  if (orphanedJobs.length > 0) {
+    const orphanedIds = orphanedJobs.map((j) => j.id);
+    await prisma.processingJob.updateMany({
+      where: {
+        id: { in: orphanedIds },
+        status: ProcessingJobStatus.ACTIVE,
+      },
+      data: {
+        status: ProcessingJobStatus.PENDING,
+        lockedAt: null,
+        lockToken: null,
+        currentStage: "orphaned_active_recovered",
+      },
+    });
+  }
+
+  return activeResult.count + orphanedJobs.length;
 }
 
 async function claimJobs(): Promise<PipelineJobPayload[]> {
@@ -116,7 +149,27 @@ async function runJob(payload: PipelineJobPayload): Promise<void> {
   }
 }
 
+async function resetConcurrencyCounter(): Promise<void> {
+  // Reset in-memory counter based on actual database state
+  // This fixes corruption from worker crashes
+  const activeJobs = await prisma.processingJob.count({
+    where: {
+      status: ProcessingJobStatus.ACTIVE,
+      lockedAt: { not: null },
+    },
+  });
+  
+  // Ensure running counter doesn't exceed actual active jobs
+  if (running > activeJobs) {
+    console.warn(`[worker] Resetting concurrency counter: ${running} -> ${activeJobs}`);
+    running = activeJobs;
+  }
+}
+
 async function pollOnce(): Promise<void> {
+  if (await isSystemPaused()) return;
+
+  await resetConcurrencyCounter();
   await releaseStaleLocks();
   const jobs = await claimJobs();
 

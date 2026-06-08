@@ -5,6 +5,8 @@ import { ContactError } from "@/lib/contacts/contact-service";
 import { DeliveryError } from "@/lib/delivery/delivery-service";
 import { OutreachError } from "@/lib/outreach/outreach-service";
 import { QueueError } from "@/lib/queue/queue-service";
+import { SystemPausedError } from "@/lib/system/system-guard";
+import { SystemModeError } from "@/lib/system/system-mode";
 import { ZodError } from "zod";
 
 export function jsonOk<T>(data: T, status = 200) {
@@ -76,6 +78,15 @@ export function handleApiError(error: unknown) {
       error.code === "JOB_NOT_FOUND" || error.code === "WEBSITE_NOT_FOUND"
         ? 404
         : 409;
+    return jsonError(error.message, status, error.code);
+  }
+
+  if (error instanceof SystemPausedError) {
+    return jsonError(error.message, 503, error.code);
+  }
+
+  if (error instanceof SystemModeError) {
+    const status = error.code === "REDIS_UNAVAILABLE" ? 503 : 500;
     return jsonError(error.message, status, error.code);
   }
 

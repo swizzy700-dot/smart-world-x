@@ -1,5 +1,11 @@
 import { Worker, Job } from "bullmq";
-import { getConnectionOptions } from "@/lib/queue/connection";
+import { getFollowUpWorkerOptions } from "@/lib/queue/bullmq-settings";
+import { deferJobIfPaused } from "@/lib/system/system-guard";
+import {
+  registerWorkerForModeSync,
+  startWorkerModeSync,
+  syncWorkersToSystemMode,
+} from "@/lib/system/worker-mode-sync";
 import { prisma } from "@/lib/db";
 import { queueOutboundEmail } from "@/lib/delivery/delivery-service";
 import { generateFollowUpMessage } from "./generator";
@@ -14,6 +20,10 @@ export function createFollowUpWorker() {
   const worker = new Worker<FollowUpQueuePayload>(
     FOLLOW_UP_QUEUE_NAME,
     async (job: Job<FollowUpQueuePayload>) => {
+      if (await deferJobIfPaused(job)) {
+        return;
+      }
+
       const { scheduleId } = job.data;
 
       try {
@@ -58,10 +68,7 @@ export function createFollowUpWorker() {
         );
       }
     },
-    {
-      connection: getConnectionOptions(),
-      concurrency: 5,
-    },
+    getFollowUpWorkerOptions(1),
   );
 
   worker.on("completed", (job) => {
@@ -70,6 +77,12 @@ export function createFollowUpWorker() {
 
   worker.on("failed", (job, err) => {
     console.error(`Follow-up job failed: ${job?.id}`, err);
+  });
+
+  registerWorkerForModeSync(worker);
+  startWorkerModeSync();
+  syncWorkersToSystemMode().catch((err) => {
+    console.warn("[followup-worker] system mode sync failed:", err);
   });
 
   return worker;
@@ -83,6 +96,15 @@ export async function runFollowUpWorker() {
     await worker.close();
     console.log("Follow-up worker stopped");
     process.exit(0);
+  });
+
+  process.on("unhandledRejection", (reason, promise) => {
+    console.error("[followup-worker] Unhandled rejection:", reason, "at:", promise);
+  });
+
+  process.on("uncaughtException", (error) => {
+    console.error("[followup-worker] Uncaught exception:", error);
+    process.exit(1);
   });
 }
 

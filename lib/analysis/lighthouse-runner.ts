@@ -92,9 +92,15 @@ export async function runLighthouse(url: string): Promise<LighthouseRunResult> {
   const lighthouse =
     lighthouseModule.default ?? lighthouseModule;
 
-  const chrome = await chromeLauncher.launch({
-    chromeFlags: CHROME_FLAGS,
-  });
+  let chrome;
+  try {
+    chrome = await chromeLauncher.launch({
+      chromeFlags: CHROME_FLAGS,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Failed to launch Chrome";
+    throw new Error(`Chrome launch failed: ${message}`);
+  }
 
   try {
     const options = {
@@ -122,6 +128,10 @@ export async function runLighthouse(url: string): Promise<LighthouseRunResult> {
     ])) as unknown as LighthouseResult;
 
     const lhr = runnerResult.lhr;
+    if (!lhr) {
+      throw new Error("Lighthouse returned invalid result: missing lhr data");
+    }
+
     const report = lhr as unknown as LighthouseReport;
     const scores = extractScores(report);
     const findings = generateFindings(report, scores);
@@ -143,8 +153,17 @@ export async function runLighthouse(url: string): Promise<LighthouseRunResult> {
       findings,
       executiveSummary: "", // filled by service with domain
     };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Lighthouse execution failed";
+    throw new Error(`Lighthouse analysis failed: ${message}`);
   } finally {
-    await chrome.kill();
+    if (chrome) {
+      try {
+        await chrome.kill();
+      } catch (killError) {
+        console.warn("[lighthouse] Failed to kill Chrome:", killError);
+      }
+    }
   }
 }
 

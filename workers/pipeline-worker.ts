@@ -33,6 +33,15 @@ async function main() {
 
   process.on("SIGINT", () => shutdown("SIGINT"));
   process.on("SIGTERM", () => shutdown("SIGTERM"));
+
+  process.on("unhandledRejection", (reason, promise) => {
+    console.error("[worker] Unhandled rejection:", reason, "at:", promise);
+  });
+
+  process.on("uncaughtException", (error) => {
+    console.error("[worker] Uncaught exception:", error);
+    process.exit(1);
+  });
 }
 
 main().catch((err) => {

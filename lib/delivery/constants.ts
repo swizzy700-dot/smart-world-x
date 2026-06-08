@@ -2,7 +2,7 @@ export const EMAIL_QUEUE_NAME = "email-delivery";
 export const EMAIL_JOB_NAME = "send-email";
 
 export const EMAIL_WORKER_CONCURRENCY = Number(
-  process.env.EMAIL_WORKER_CONCURRENCY ?? 3,
+  process.env.EMAIL_WORKER_CONCURRENCY ?? 1,
 );
 
 export const EMAIL_MAX_ATTEMPTS = Number(process.env.EMAIL_MAX_ATTEMPTS ?? 3);

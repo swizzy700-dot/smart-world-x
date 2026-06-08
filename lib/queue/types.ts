@@ -20,10 +20,16 @@ export interface QueueStats {
     failed: number;
     paused: boolean;
     mode: "redis" | "database";
+    statsSource?: "redis" | "snapshot" | "database";
   };
   workers: {
     concurrency: number;
     activeLocks: number;
+  };
+  system: {
+    mode: "RUNNING" | "PAUSED";
+    redisAvailable: boolean;
+    failSafe: boolean;
   };
 }
 

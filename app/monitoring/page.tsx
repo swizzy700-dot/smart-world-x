@@ -1,7 +1,10 @@
 "use client";
 
+import { SystemModeToggle } from "@/components/system/system-mode-toggle";
 import Link from "next/link";
 import { useEffect, useState } from "react";
+import { fetchSystemMode } from "@/lib/system/client";
+import type { SystemMode } from "@/lib/system/types";
 
 interface SystemHealth {
   status: "healthy" | "degraded" | "unhealthy";
@@ -70,8 +73,9 @@ export default function MonitoringPage() {
   const [data, setData] = useState<MonitoringData | null>(null);
   const [loading, setLoading] = useState(true);
   const [lastUpdated, setLastUpdated] = useState<string>("");
-
   useEffect(() => {
+    let interval: ReturnType<typeof setInterval> | undefined;
+
     const fetchData = async () => {
       try {
         const response = await fetch("/api/monitoring");
@@ -87,10 +91,25 @@ export default function MonitoringPage() {
       }
     };
 
-    fetchData();
-    const interval = setInterval(fetchData, 30000); // Refresh every 30 seconds
+    const boot = async () => {
+      let mode: SystemMode = "PAUSED";
+      try {
+        const status = await fetchSystemMode();
+        mode = status.mode;
+      } catch {
+        mode = "PAUSED";
+      }
 
-    return () => clearInterval(interval);
+      await fetchData();
+      if (mode === "RUNNING") {
+        interval = setInterval(fetchData, 60_000);
+      }
+    };
+
+    boot().catch(() => setLoading(false));
+    return () => {
+      if (interval) clearInterval(interval);
+    };
   }, []);
 
   const statusColor = (status: string) => {
@@ -155,15 +174,18 @@ export default function MonitoringPage() {
           <p className="font-mono text-[10px] tracking-[0.3em] text-cyan-600">
             OPS / MONITORING
           </p>
-          <div className="flex items-center justify-between">
+          <div className="flex flex-wrap items-center justify-between gap-4">
             <h1 className="font-mono text-2xl font-semibold text-cyan-50">
               SYSTEM MONITORING
             </h1>
-            {lastUpdated && (
-              <p className="font-mono text-xs text-cyan-600">
-                Last updated: {lastUpdated}
-              </p>
-            )}
+            <div className="flex flex-wrap items-center gap-4">
+              <SystemModeToggle compact />
+              {lastUpdated && (
+                <p className="font-mono text-xs text-cyan-600">
+                  Last updated: {lastUpdated}
+                </p>
+              )}
+            </div>
           </div>
         </header>
 

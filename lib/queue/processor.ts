@@ -20,13 +20,28 @@ export async function processPipelineJob(
   }
 
   await markJobStage(payload.jobId, "analyze");
-  await runWebsiteAnalysis(payload.websiteId, payload.normalizedUrl);
+  try {
+    await runWebsiteAnalysis(payload.websiteId, payload.normalizedUrl);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Analysis failed";
+    throw new Error(`Analysis failed: ${message}`);
+  }
 
   await markJobStage(payload.jobId, "extract_contacts");
-  await runContactExtraction(payload.websiteId, payload.normalizedUrl);
+  try {
+    await runContactExtraction(payload.websiteId, payload.normalizedUrl);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Contact extraction failed";
+    throw new Error(`Contact extraction failed: ${message}`);
+  }
 
   await markJobStage(payload.jobId, "generate_outreach");
-  await runOutreachGeneration(payload.websiteId);
+  try {
+    await runOutreachGeneration(payload.websiteId);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Outreach generation failed";
+    throw new Error(`Outreach generation failed: ${message}`);
+  }
 
   await markJobStage(payload.jobId, "send_email");
   try {

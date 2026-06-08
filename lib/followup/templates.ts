@@ -42,8 +42,8 @@ export const FOLLOW_UP_1_TEMPLATE: FollowUpTemplate = {
     lines.push("");
     lines.push("Best regards,");
     lines.push("[Digital Growth Consultant]");
-    lines.push("[mainlinemlr.com]");
-    lines.push("");
+    lines.push("(https://mainlinemlr.com)");
+lines.push("");
 
     return lines.join("\n");
   },
@@ -86,8 +86,8 @@ export const FOLLOW_UP_2_TEMPLATE: FollowUpTemplate = {
     lines.push("");
     lines.push("Best regards,");
     lines.push("[Digital Growth Consultant]");
-    lines.push("[mainlinemlr.com]");
-    lines.push("");
+    lines.push("(https://mainlinemlr.com)");
+lines.push("");
 
     return lines.join("\n");
   },
@@ -130,8 +130,8 @@ export const FOLLOW_UP_3_TEMPLATE: FollowUpTemplate = {
     lines.push("");
     lines.push("Best regards,");
     lines.push("[Digital Growth Consultant]");
-    lines.push("[mainlinemlr.com]");
-    lines.push("");
+    lines.push("(https://mainlinemlr.com)");
+lines.push("");
 
     return lines.join("\n");
   },

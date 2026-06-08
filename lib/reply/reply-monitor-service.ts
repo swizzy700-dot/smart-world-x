@@ -4,6 +4,7 @@ import { updateLeadStatusOnReply, setLeadStatus } from "./lead-status-service";
 import { addInboundConversation, addOutboundConversation } from "./conversation-service";
 import { EmailMonitor, getReplyMonitoringConfig, isReplyMonitoringEnabled } from "./email-monitor";
 import { recordReply } from "@/lib/followup";
+import { isSystemPaused } from "@/lib/system/system-mode";
 import type { EmailMessage } from "./types";
 
 export class ReplyMonitorError extends Error {
@@ -68,6 +69,10 @@ export async function processIncomingEmail(email: EmailMessage): Promise<void> {
  * Main inbox monitoring loop
  */
 export async function monitorInbox(): Promise<void> {
+  if (await isSystemPaused()) {
+    return;
+  }
+
   if (!isReplyMonitoringEnabled()) {
     console.log("Reply monitoring not enabled - IMAP credentials not configured");
     return;

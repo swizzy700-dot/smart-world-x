@@ -157,7 +157,8 @@ function buildBody(params: {
   lines.push("");
   lines.push("Warm regards,");
   lines.push("Digital Growth Consultant");
-  lines.push("mainlinemlr.com");
+  lines.push("(https://mainlinemlr.com)");
+lines.push("");
   
 
   return lines.join("\n");

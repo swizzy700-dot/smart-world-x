@@ -3,18 +3,47 @@
 import { useEffect, useState } from "react";
 import { fetchDeliveryStats } from "@/lib/delivery/client";
 import type { DeliveryStats } from "@/lib/delivery/types";
+import { fetchSystemMode } from "@/lib/system/client";
+import type { SystemMode } from "@/lib/system/types";
+
+const POLL_MS = Number(process.env.NEXT_PUBLIC_DELIVERY_DASHBOARD_POLL_MS ?? 15_000);
 
 export function DeliveryMonitor() {
   const [stats, setStats] = useState<DeliveryStats | null>(null);
 
   useEffect(() => {
-    fetchDeliveryStats()
-      .then(setStats)
-      .catch(() => setStats(null));
-    const id = setInterval(() => {
-      fetchDeliveryStats().then(setStats).catch(() => {});
-    }, 5000);
-    return () => clearInterval(id);
+    let interval: ReturnType<typeof setInterval> | undefined;
+
+    const load = async () => {
+      try {
+        const data = await fetchDeliveryStats();
+        setStats(data);
+      } catch {
+        setStats(null);
+      }
+    };
+
+    const boot = async () => {
+      let mode: SystemMode = "PAUSED";
+      try {
+        const status = await fetchSystemMode();
+        mode = status.mode;
+      } catch {
+        mode = "PAUSED";
+      }
+
+      await load();
+      if (mode === "RUNNING") {
+        interval = setInterval(() => {
+          load().catch(() => {});
+        }, POLL_MS);
+      }
+    };
+
+    boot().catch(() => {});
+    return () => {
+      if (interval) clearInterval(interval);
+    };
   }, []);
 
   if (!stats) return null;
